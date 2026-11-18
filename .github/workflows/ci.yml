@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore PaymentGateway.sln
+
+      - name: Build
+        run: dotnet build PaymentGateway.sln --configuration Release --no-restore
+
+      # The smoke tests (DESIGN 7.1) run against the real simulator, so start it first.
+      - name: Start bank simulator
+        run: |
+          docker compose up -d bank_simulator
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:2525 && exit 0
+            sleep 1
+          done
+          echo "Bank simulator did not start" && docker compose logs bank_simulator && exit 1
+
+      - name: Test
+        env:
+          BANK_SIMULATOR_URL: http://localhost:8080
+        run: >
+          dotnet test PaymentGateway.sln --configuration Release --no-build
+          --logger "trx;LogFileName=results.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+
+      - name: Stop bank simulator
+        if: always()
+        run: docker compose down
+
+  # Builds the image and exercises the running container against the simulator (DESIGN D17),
+  # so packaging, configuration and the container network are tested, not just compilation.
+  container:
+    name: Build and smoke test container
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image and start gateway with bank simulator
+        run: docker compose up -d --build
+
+      - name: Container smoke test
+        run: scripts/container-smoke-test.sh
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down

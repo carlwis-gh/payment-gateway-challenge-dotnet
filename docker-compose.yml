@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   bank_simulator:
     container_name: bank_simulator
@@ -12,4 +10,24 @@ services:
       - type: bind
         source: ./imposters
         target: /imposters
-      
+
+  # The gateway itself (DESIGN D17). `docker compose up --build` starts both services;
+  # `docker compose up -d bank_simulator` still starts the simulator alone.
+  payment_gateway:
+    container_name: payment_gateway
+    build: .
+    depends_on:
+      - bank_simulator
+    ports:
+      - "5080:8080"
+    environment:
+      # Development gives Swagger and the two development merchant keys. A real deployment would
+      # run as Production and supply MerchantAuth__Merchants__N__MerchantId / __KeyHash from a
+      # secret store instead.
+      ASPNETCORE_ENVIRONMENT: Development
+      # Containers reach each other by service name, not localhost.
+      Bank__BaseUrl: http://bank_simulator:8080
+      Bank__Timeout: "00:00:10"
+      # Structured JSON logs, as in Production, so they can be shipped to a log pipeline.
+      Logging__Console__FormatterName: json
+      Logging__Console__FormatterOptions__TimestampFormat: "yyyy-MM-ddTHH:mm:ss.fffZ"
